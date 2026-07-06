@@ -1,6 +1,7 @@
 from typing import List, Dict, Any, Optional
-from core.models import AtomicNode, Zone
+from core.models import AtomicNode, Zone, Chunk
 from core.lexer import ZoneLexer
+from core.cohesion import CohesionEngine
 from strategies.treesitter_parser import TreeSitterStrategy
 from strategies.prose_parser import ProseStrategy
 
@@ -8,7 +9,7 @@ from strategies.prose_parser import ProseStrategy
 class LoomOrchestrator:
     """
     The main entry point for the Loom library.
-    Coordinates Stage 1 (Lexing) and Stage 2 (Extraction).
+    Coordinates Stage 1 (Lexing), Stage 2 (Extraction), and Stage 3 (Cohesion).
     """
 
     def __init__(self, user_config: Optional[Dict[str, Any]] = None):
@@ -28,13 +29,13 @@ class LoomOrchestrator:
         """Allows users to inject custom parsing strategies at runtime."""
         self._strategy_registry[name] = strategy_instance
 
-    def process_file(self, file_path: str, file_content: str) -> List[AtomicNode]:
+    def process_file(self, file_path: str, file_content: str) -> List[Chunk]:
         """
-        Processes a single file through the extraction pipeline.
+        Processes a single file through the entire Loom pipeline.
 
         :param file_path: Path of the target file (used for extension matching)
         :param file_content: Raw string content of the file
-        :return: Chronologically sorted list of extracted AtomicNodes
+        :return: A list of consolidated, context-retained Chunk payloads
         """
         # 1. Match configuration rules for this specific file path
         file_rules = self._find_matching_rules(file_path)
@@ -44,7 +45,7 @@ class LoomOrchestrator:
 
         all_atomic_nodes: List[AtomicNode] = []
 
-        # 3. Stage 2: Loop through zones and dispatch to strategies
+        # 3. Stage 2: Loop through zones and dispatch to extraction strategies
         for zone in zones:
             # Determine which strategy to use: User override -> Default mapping
             strategy_name = self._determine_strategy_name(zone, file_rules)
@@ -61,8 +62,22 @@ class LoomOrchestrator:
             extracted_nodes = strategy.parse(zone, processor_params)
             all_atomic_nodes.extend(extracted_nodes)
 
-        # Ensure everything is returned in exact order of appearance in the file
-        return sorted(all_atomic_nodes, key=lambda n: n.start_line)
+        # Ensure everything is sorted in exact order of appearance before fusing
+        sorted_nodes = sorted(all_atomic_nodes, key=lambda n: n.start_line)
+
+        # 4. Stage 3: Pass the chronological nodes to the Cohesion Engine for fusion
+        # Pull threshold values from configuration if provided, otherwise use defaults
+        cohesion_config = self.user_config.get("cohesion", {})
+        similarity_threshold = cohesion_config.get("similarity_threshold", 0.80)
+        max_chunk_lines = cohesion_config.get("max_chunk_lines", 50)
+
+        engine = CohesionEngine(
+            similarity_threshold=similarity_threshold,
+            max_chunk_lines=max_chunk_lines
+        )
+
+        final_chunks = engine.fuse_nodes(file_path, sorted_nodes)
+        return final_chunks
 
     def _find_matching_rules(self, file_path: str) -> Optional[Dict[str, Any]]:
         """Checks the user config to see if the file matches any glob patterns."""
