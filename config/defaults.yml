@@ -1,0 +1,12 @@
+cohesion:
+  similarity_threshold: 0.80
+  max_chunk_lines: 50
+  max_prose_code_gap: 4
+
+files:
+  - match: "*.md"
+    processors:
+      - segment: "prose_section"
+        strategy: "prose"
+      - segment: "code_block"
+        strategy: "tree_sitter"

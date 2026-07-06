@@ -1,5 +1,5 @@
 import re
-from typing import List
+from typing import List, Dict, Any
 from core.models import AtomicNode, Chunk
 
 
@@ -10,9 +10,10 @@ class CohesionEngine:
     Resolves explicit hierarchical graph edges via a two-pass architecture.
     """
 
-    def __init__(self, similarity_threshold: float = 0.80, max_chunk_lines: int = 50):
+    def __init__(self, similarity_threshold: float = 0.80, max_chunk_lines: int = 50, max_prose_code_gap: int = 4):
         self.similarity_threshold = similarity_threshold
         self.max_chunk_lines = max_chunk_lines
+        self.max_prose_code_gap = max_prose_code_gap  # Configured gap threshold
         # Rigid structural code blocks that should never be fused together
         self._structural_types = {"class_declaration", "interface_declaration", "method_declaration"}
 
@@ -36,7 +37,6 @@ class CohesionEngine:
                 continue
 
             # Rule 2: Structural Code Boundary Safeguard
-            # If either block is a structural code unit, force a clean chunk break
             if current_node.node_type in self._structural_types or next_node.node_type in self._structural_types:
                 chunks.append(self._commit_chunk(file_path, current_batch))
                 current_batch = [next_node]
@@ -67,26 +67,36 @@ class CohesionEngine:
             chunks.append(self._commit_chunk(file_path, current_batch))
 
         # Pass 2: Global Graph Relation Resolution
-        # 2a. Map physical AST signatures straight to their parent Chunk UUIDs
         signature_to_chunk_id = {}
         for chunk in chunks:
             for sig in chunk.metadata.get("_node_signatures", []):
                 signature_to_chunk_id[sig] = chunk.id
 
-        # 2b. Stitch together the CHILD_OF edge relationships
-        for chunk in chunks:
+        # Stitch together the graph relationships
+        for i, chunk in enumerate(chunks):
             parent_sigs = chunk.metadata.pop("_parent_signatures", [])
-            # Clean up the internal routing array from finalized public metadata
             chunk.metadata.pop("_node_signatures", None)
 
+            # Resolve CHILD_OF edges (Code -> Code)
             for parent_sig in parent_sigs:
                 target_uuid = signature_to_chunk_id.get(parent_sig)
-                # Ensure we don't accidentally link a chunk back to itself
                 if target_uuid and target_uuid != chunk.id:
                     chunk.relations.append({
                         "target_id": target_uuid,
                         "type": "CHILD_OF"
                     })
+
+            # Resolve EXPLAINS edges using the configuration property
+            if chunk.metadata.get("chunk_type") == "prose_section" and i + 1 < len(chunks):
+                next_chunk = chunks[i + 1]
+
+                if next_chunk.metadata.get("chunk_type") == "code_block":
+                    gap = next_chunk.metadata["start_line"] - chunk.metadata["end_line"]
+                    if gap <= self.max_prose_code_gap:  # Dynamic configuration lookup
+                        chunk.relations.append({
+                            "target_id": next_chunk.id,
+                            "type": "EXPLAINS"
+                        })
 
         return chunks
 
@@ -101,16 +111,17 @@ class CohesionEngine:
 
     def _commit_chunk(self, file_path: str, batch: List[AtomicNode]) -> Chunk:
         fused_content = "\n".join([n.content for n in batch])
-
-        # Track signatures internally through the compilation phase
         node_sigs = [n.features["node_signature"] for n in batch if "node_signature" in n.features]
         parent_sigs = [n.features["parent_signature"] for n in batch if "parent_signature" in n.features]
+
+        chunk_type = "code_block" if batch[0].node_type in self._structural_types else "prose_section"
 
         return Chunk(
             content=fused_content,
             origin_file=file_path,
             constituent_nodes=[n.id for n in batch],
             metadata={
+                "chunk_type": chunk_type,
                 "start_line": batch[0].start_line,
                 "end_line": batch[-1].end_line,
                 "node_count": len(batch),

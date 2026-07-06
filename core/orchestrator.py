@@ -17,12 +17,10 @@ class LoomOrchestrator:
     def __init__(self, user_config: Optional[Dict[str, Any]] = None):
         self.user_config = user_config or {}
 
-        # Internal Strategy Registry
-        # Maps configuration strings to concrete execution classes
         self._strategy_registry = {
             "tree_sitter": TreeSitterStrategy(),
             "prose": ProseStrategy(),
-            "code_block": TreeSitterStrategy(),  # Default mapping helpers
+            "code_block": TreeSitterStrategy(),
             "prose_section": ProseStrategy(),
             "raw_text": ProseStrategy()
         }
@@ -38,24 +36,12 @@ class LoomOrchestrator:
             emitter: Optional[BaseEmitter] = None,
             **emitter_kwargs
     ) -> Union[List[Chunk], Any]:
-        """
-        Processes a single file through the entire multi-stage Loom pipeline.
-
-        :param file_path: Path of the target file (used for extension matching)
-        :param file_content: Raw string content of the file
-        :param emitter: Optional Stage 4 Emitter instance (e.g., JsonEmitter)
-        :param emitter_kwargs: Key-value arguments passed directly to the emitter's emit method
-        :return: Extracted Chunks list, or the formatted emitter output if an emitter is provided
-        """
-        # 1. Match configuration rules for this specific file path
+        """Processes a single file through the configured multi-stage Loom pipeline."""
         file_rules = self._find_matching_rules(file_path)
-
-        # 2. Stage 1: Slice file into physical/logical Zones
         zones: List[Zone] = ZoneLexer.slice_file(file_path, file_content, file_rules)
 
         all_atomic_nodes: List[AtomicNode] = []
 
-        # 3. Stage 2: Loop through zones and dispatch to extraction strategies
         for zone in zones:
             strategy_name = self._determine_strategy_name(zone, file_rules)
             strategy = self._strategy_registry.get(strategy_name)
@@ -63,31 +49,39 @@ class LoomOrchestrator:
             if not strategy:
                 strategy = self._strategy_registry["prose"]
 
+            # 1. Fetch static fallback parameters from defaults.yml
             processor_params = self._get_processor_params(strategy_name, file_rules)
+
+            # 2. Dynamic Override: If the lexer already extracted a language token
+            # (like 'java' or 'py' from a markdown fence), prioritize it!
+            if zone.metadata and "language" in zone.metadata:
+                # Create a shallow copy to prevent mutating shared configuration dictionaries
+                processor_params = {**processor_params, "language": zone.metadata["language"]}
+
+            # 3. Parse using the combined contextual parameters
             extracted_nodes = strategy.parse(zone, processor_params)
             all_atomic_nodes.extend(extracted_nodes)
 
-        # Ensure everything is sorted in exact chronological order before fusing
         sorted_nodes = sorted(all_atomic_nodes, key=lambda n: n.start_line)
 
-        # 4. Stage 3: Pass the sorted nodes to the Cohesion Engine for fusion
+        # Stage 3 Configuration Parsing
         cohesion_config = self.user_config.get("cohesion", {})
         similarity_threshold = cohesion_config.get("similarity_threshold", 0.80)
         max_chunk_lines = cohesion_config.get("max_chunk_lines", 50)
+        max_prose_code_gap = cohesion_config.get("max_prose_code_gap", 4)  # Extract default fallback
 
+        # Initialize engine using declarative configurations
         engine = CohesionEngine(
             similarity_threshold=similarity_threshold,
-            max_chunk_lines=max_chunk_lines
+            max_chunk_lines=max_chunk_lines,
+            max_prose_code_gap=max_prose_code_gap
         )
 
         final_chunks = engine.fuse_nodes(file_path, sorted_nodes)
 
-        # 5. Stage 4: Emission Layer
-        # If an emitter is provided, run the chunks through it and return its specific output format
         if emitter:
             return emitter.emit(final_chunks, **emitter_kwargs)
 
-        # Default fallback: Return the raw internal Chunk payloads
         return final_chunks
 
     def _find_matching_rules(self, file_path: str) -> Optional[Dict[str, Any]]:
@@ -104,7 +98,6 @@ class LoomOrchestrator:
             for processor in file_rules["processors"]:
                 if processor.get("segment") == zone.zone_type:
                     return processor.get("strategy", "prose")
-
         return zone.zone_type
 
     def _get_processor_params(self, strategy_name: str, file_rules: Optional[Dict[str, Any]]) -> Dict[str, Any]:

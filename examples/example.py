@@ -1,12 +1,16 @@
+import yaml
 from core.orchestrator import LoomOrchestrator
 from emitters.json_emitter import JsonEmitter
 
-# 1. Initialize our engine
-loom = LoomOrchestrator()
+# 1. Load declarative configuration file from disk
+with open("../config/defaults.yml", "r", encoding="utf-8") as f:
+    config_payload = yaml.safe_load(f)
+
+# 2. Instantiate Loom with our parsed runtime properties
+loom = LoomOrchestrator(user_config=config_payload)
 json_emitter = JsonEmitter()
 
-sample_code = """
-# Core Architecture
+markdown_sample = """# Core Architecture
 
 The main execution engine relies on a central tool runner.
 
@@ -16,15 +20,14 @@ public class Tool {
         System.out.println("Running...");
     }
 }
-"""
+```"""
 
-# 2. Process file and trigger Stage 4 Emission directly
-# This returns a clean JSON string and writes 'output.json' to disk
-json_string = loom.process_file(
+# 3. Process and Emit graph context arrays
+json_output = loom.process_file(
     file_path="README.md",
-    file_content=sample_code,
+    file_content=markdown_sample,
     emitter=json_emitter,
     output_path="output.json"
 )
 
-print(json_string)
+print(json_output)
