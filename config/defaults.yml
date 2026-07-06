@@ -1,5 +1,5 @@
 cohesion:
-  similarity_threshold: 0.80
+  similarity_threshold: 0.75
   max_chunk_lines: 50
   max_prose_code_gap: 4
 
@@ -10,3 +10,13 @@ files:
         strategy: "prose"
       - segment: "code_block"
         strategy: "tree_sitter"
+
+  - match: "*.txt"
+    processors:
+      - segment: "raw_text"
+        strategy: "prose"
+
+  - match: "*.log"
+    processors:
+      - segment: "raw_text"
+        strategy: "log"

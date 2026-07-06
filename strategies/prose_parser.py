@@ -1,88 +1,37 @@
-import re
 from typing import List, Dict, Any
-from core.models import Zone, AtomicNode
-from strategies.base import BaseStrategy
+from core.models import AtomicNode, Zone
 
 
-class ProseStrategy(BaseStrategy):
-    """
-    Stage 2: Prose Strategy. Slices conversational text or documentation
-    into granular paragraphs or sentences using regex boundaries.
-    """
+class ProseStrategy:
+    """Chunks unstructured text by structural paragraph layouts instead of sentence-splitting."""
 
     def parse(self, zone: Zone, parameters: Dict[str, Any]) -> List[AtomicNode]:
-        granularity = parameters.get("granularity", "sentence")  # "paragraph" or "sentence"
         content = zone.content
+        blocks = content.split("\n\n")
 
-        if not content.strip():
-            return []
+        nodes = []
+        current_line = zone.start_line
 
-        # Build line offsets relative to this specific zone content
-        line_offsets = [0] + [m.end() for m in re.finditer(r'\n', content)]
+        for block in blocks:
+            stripped = block.strip()
+            if not stripped:
+                current_line += block.count("\n")
+                continue
 
-        def get_relative_line(char_idx: int) -> int:
-            return next((i for i, offset in enumerate(line_offsets) if offset > char_idx), len(line_offsets))
+            lines_in_block = block.count("\n")
+            end_line = current_line + lines_in_block
+            node_type = "header" if stripped.startswith("#") else "paragraph"
 
-        atomic_nodes = []
+            # FIX: Supply the required zone_id backlink
+            nodes.append(AtomicNode(
+                zone_id=zone.id,
+                node_type=node_type,
+                content=stripped,
+                start_line=current_line,
+                end_line=end_line,
+                features={}
+            ))
 
-        # Option A: Split by Paragraphs (Double newlines)
-        if granularity == "paragraph":
-            pattern = re.compile(r'(?:\r?\n){2,}')
-            last_idx = 0
+            current_line = end_line + 1
 
-            for match in pattern.finditer(content):
-                start, end = match.span()
-                text_block = content[last_idx:start].strip()
-                if text_block:
-                    atomic_nodes.append(
-                        self._create_node(zone, text_block, last_idx, start, get_relative_line, "paragraph"))
-                last_idx = end
-
-            if last_idx < len(content):
-                text_block = content[last_idx:].strip()
-                if text_block:
-                    atomic_nodes.append(
-                        self._create_node(zone, text_block, last_idx, len(content), get_relative_line, "paragraph"))
-
-        # Option B: Split by Sentences (Standard punctuation tracking)
-        else:
-            # Smart regex split that respects standard abbreviations but catches sentence terminals (. ! ?)
-            sentence_end = re.compile(r'(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=\.|\?|\!)\s+')
-            last_idx = 0
-
-            # Find the split points
-            splits = [match.span() for match in sentence_end.finditer(content)]
-
-            for start, end in splits:
-                text_block = content[last_idx:start].strip()
-                if text_block:
-                    atomic_nodes.append(
-                        self._create_node(zone, text_block, last_idx, start, get_relative_line, "sentence"))
-                last_idx = end
-
-            if last_idx < len(content):
-                text_block = content[last_idx:].strip()
-                if text_block:
-                    atomic_nodes.append(
-                        self._create_node(zone, text_block, last_idx, len(content), get_relative_line, "sentence"))
-
-        return atomic_nodes
-
-    def _create_node(self, zone: Zone, text: str, start_idx: int, end_idx: int, line_fn: Any,
-                     node_type: str) -> AtomicNode:
-        """Helper to compute absolute file lines and generate the AtomicNode."""
-        rel_start = line_fn(start_idx)
-        rel_end = line_fn(end_idx)
-
-        # Translate to global document lines
-        abs_start = zone.start_line + max(0, rel_start - 1)
-        abs_end = zone.start_line + max(0, rel_end - 1)
-
-        return AtomicNode(
-            zone_id=zone.id,
-            node_type=node_type,
-            content=text,
-            start_line=abs_start,
-            end_line=max(abs_start, abs_end),
-            features={"character_count": len(text)}
-        )
+        return nodes

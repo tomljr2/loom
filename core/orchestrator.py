@@ -1,11 +1,14 @@
+from pathlib import Path
 from typing import List, Dict, Any, Optional, Union
 from core.models import AtomicNode, Zone, Chunk
 from core.lexer import ZoneLexer
 from core.cohesion import CohesionEngine
+from core.config import load_runtime_config  # Import our new loader
+from strategies.log_parser import LogStrategy
 from strategies.treesitter_parser import TreeSitterStrategy
 from strategies.prose_parser import ProseStrategy
 from emitters.base import BaseEmitter
-
+from strategies.standard_splitters import DelimiterStrategy, FixedSizeStrategy
 
 class LoomOrchestrator:
     """
@@ -14,15 +17,16 @@ class LoomOrchestrator:
     Stage 3 (Cohesion), and Stage 4 (Emission).
     """
 
-    def __init__(self, user_config: Optional[Dict[str, Any]] = None):
-        self.user_config = user_config or {}
+    def __init__(self, config: Optional[Union[str, Path, Dict[str, Any]]] = None):
+        # Automatically load and layer configurations behind the scenes
+        self.user_config = load_runtime_config(config)
 
         self._strategy_registry = {
             "tree_sitter": TreeSitterStrategy(),
             "prose": ProseStrategy(),
-            "code_block": TreeSitterStrategy(),
-            "prose_section": ProseStrategy(),
-            "raw_text": ProseStrategy()
+            "delimiter": DelimiterStrategy(),
+            "fixed_size": FixedSizeStrategy(),
+            "log": LogStrategy()  # Registered!
         }
 
     def register_strategy(self, name: str, strategy_instance: Any):
