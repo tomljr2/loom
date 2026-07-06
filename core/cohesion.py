@@ -4,6 +4,8 @@ from typing import List, Dict, Any
 from types import SimpleNamespace
 from core.models import AtomicNode
 from core.relations import StructuralEdgeExtractor
+from core.entities import EntityExtractor
+from core.utils import count_tokens
 
 
 class CohesionEngine:
@@ -13,13 +15,18 @@ class CohesionEngine:
 
         :param similarity_threshold: Jaccard similarity cutoff for merging fusable nodes.
         :param max_chunk_lines: The hard upper limit of lines allowed in a single chunk.
-        :param kwargs: Captures and absorbs extra orchestrator configs (e.g., max_prose_code_gap).
+        :param kwargs: Captures orchestration/config parameters dynamically (e.g., graph_keywords).
         """
         self.similarity_threshold = similarity_threshold
         self.max_chunk_lines = max_chunk_lines
 
         # Node types explicitly permitted to undergo semantic similarity evaluation
         self.fusable_types = {"paragraph", "sentence", "text_segment", "raw_text"}
+
+        # Pull dynamic extraction keywords passed down from configuration layers
+        # Defaulting to a safe structural array matching current workspace testing profiles
+        graph_keywords = kwargs.get("graph_keywords", ["telemetry", "pyrolysis", "hardware", "buffer"])
+        self.entity_extractor = EntityExtractor(vocabulary=graph_keywords)
 
     def fuse_nodes(self, origin_file: str, nodes: List[AtomicNode]) -> List[Any]:
         """
@@ -67,8 +74,8 @@ class CohesionEngine:
         if current_batch:
             chunks.append(self._build_chunk(current_batch, origin_file))
 
-        # Run the deterministic structural edge pass to stitch the graph topology together
-        final_graph_chunks = StructuralEdgeExtractor.extract_edges(chunks)
+        # Run the structural backbone edge pass and apply dynamic entity mesh routing
+        final_graph_chunks = StructuralEdgeExtractor.extract_edges(chunks, self.entity_extractor)
 
         return final_graph_chunks
 
@@ -101,7 +108,7 @@ class CohesionEngine:
         else:
             chunk_type = dominant_type
 
-        # Wrapped in SimpleNamespace to cleanly support dot-notation access (e.g. chunk.id)
+        # Final metadata construction with integrated token count
         return SimpleNamespace(
             id=str(uuid.uuid4()),
             origin_file=origin_file,
@@ -111,6 +118,7 @@ class CohesionEngine:
                 "start_line": batch[0].start_line,
                 "end_line": batch[-1].end_line,
                 "node_count": len(batch),
+                "token_count": count_tokens(content),  # The new final piece
                 "chunk_type": chunk_type
             },
             relations=relations
