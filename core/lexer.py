@@ -5,104 +5,90 @@ from core.models import Zone
 
 class ZoneLexer:
     """
-    Stage 1: Slices raw file content into distinct semantic Zones
-    based on regex boundaries or default file extension rules.
+    Stage 1: Analyzes raw multi-modal files (like Markdown) and slices them
+    into logical physical boundaries (Zones), stripping layout formatting wrappers.
     """
 
-    # Built-in fallback conventions for standard file types
-    DEFAULT_EXTENSIONS = {
-        "java": "code_block",
-        "py": "code_block",
-        "ts": "code_block",
-        "js": "code_block",
-        "go": "code_block",
-        "txt": "prose_section",
-        "log": "prose_section"
-    }
-
-    @classmethod
-    def slice_file(cls, source_file: str, content: str, file_rules: Optional[Dict[str, Any]] = None) -> List[Zone]:
-        """
-        Main entry point. Inspects rules, runs segmentations,
-        and maps text slices to Zone objects.
-        """
-        # 1. If no custom rules match, fallback to standard extension conventions
-        if not file_rules:
-            ext = source_file.split(".")[-1].lower()
-            zone_type = cls.DEFAULT_EXTENSIONS.get(ext, "raw_text")
-
-            # Count lines for the metadata
-            total_lines = len(content.splitlines()) if content else 1
-            return [
-                Zone(
-                    source_file=source_file,
-                    zone_type=zone_type,
-                    content=content,
-                    start_line=1,
-                    end_line=max(1, total_lines),
-                    metadata={"language": ext} if zone_type == "code_block" else {}
-                )
-            ]
-
-        # 2. If hierarchical configuration rules *are* provided, run the regex segmentation
-        return cls._run_segmentation(source_file, content, file_rules)
-
-    @classmethod
-    def _run_segmentation(cls, source_file: str, content: str, rules: Dict[str, Any]) -> List[Zone]:
+    @staticmethod
+    def slice_file(file_path: str, file_content: str, file_rules: Optional[Dict[str, Any]] = None) -> List[Zone]:
+        lines = file_content.splitlines()
         zones = []
-        last_index = 0
 
-        # Track line numbers accurately during slicing
-        line_offsets = [0] + [m.end() for m in re.finditer(r'\n', content)]
+        # Target Markdown files for structured multi-modal fence extraction
+        if file_path.endswith(".md") or file_path.endswith(".markdown"):
+            in_code_block = False
+            current_zone_lines = []
+            zone_start_line = 1
+            current_lang = None
+            zone_counter = 1
 
-        def get_line_number(char_idx: int) -> int:
-            return next((i for i, offset in enumerate(line_offsets) if offset > char_idx), len(line_offsets))
+            for line_idx, line in enumerate(lines, 1):
+                # Detect Markdown code block boundaries
+                if line.strip().startswith("```"):
+                    if not in_code_block:
+                        # 1. Close out the preceding prose section if it has content
+                        if current_zone_lines:
+                            zones.append(Zone(
+                                id=f"zone_{zone_counter}",
+                                source_file=file_path,  # Fixed: Added tracking back to source file
+                                zone_type="prose_section",
+                                content="\n".join(current_zone_lines),
+                                start_line=zone_start_line,
+                                end_line=line_idx - 1,
+                                metadata={}
+                            ))
+                            zone_counter += 1
 
-        # Iterate through the segmentation definitions (e.g., matching code blocks first)
-        for segment_rule in rules.get("segmentation", []):
-            pattern = re.compile(segment_rule["pattern"])
+                        # 2. Extract language token (e.g., ```java -> java)
+                        current_lang = line.strip().replace("```", "").strip().lower() or "text"
+                        in_code_block = True
+                        current_zone_lines = []
+                        zone_start_line = line_idx + 1  # Content starts *after* the backticks fence
+                    else:
+                        # 3. Close out the active code block zone
+                        if current_zone_lines:
+                            zones.append(Zone(
+                                id=f"zone_{zone_counter}",
+                                source_file=file_path,  # Fixed: Added tracking back to source file
+                                zone_type="code_block",
+                                content="\n".join(current_zone_lines),
+                                start_line=zone_start_line,
+                                end_line=line_idx - 1,
+                                metadata={"language": current_lang}
+                            ))
+                            zone_counter += 1
+                        in_code_block = False
+                        current_zone_lines = []
+                        zone_start_line = line_idx + 1
+                else:
+                    current_zone_lines.append(line)
 
-            for match in pattern.finditer(content):
-                # Handle any uncaptured text *before* the match as a default fallback zone
-                start_back, end_back = match.span()
-                if start_back > last_index:
-                    prose_text = content[last_index:start_back]
-                    if prose_text.strip():
-                        zones.append(Zone(
-                            source_file=source_file,
-                            zone_type="prose_section",
-                            content=prose_text,
-                            start_line=get_line_number(last_index),
-                            end_line=get_line_number(start_back)
-                        ))
-
-                # Capture the explicit match group details
-                caps = segment_rule.get("capture_groups", {})
-                zone_content = match.group(caps.get("content", 0))
-                lang_group = caps.get("language", None)
-                lang = match.group(lang_group) if lang_group else "unknown"
-
+            # Clean up any trailing segments at the bottom of the file
+            if current_zone_lines:
                 zones.append(Zone(
-                    source_file=source_file,
-                    zone_type=segment_rule["name"],
-                    content=zone_content,
-                    start_line=get_line_number(start_back),
-                    end_line=get_line_number(end_back),
-                    metadata={"language": lang} if lang != "unknown" else {}
+                    id=f"zone_{zone_counter}",
+                    source_file=file_path,  # Fixed: Added tracking back to source file
+                    zone_type="code_block" if in_code_block else "prose_section",
+                    content="\n".join(current_zone_lines),
+                    start_line=zone_start_line,
+                    end_line=len(lines),
+                    metadata={"language": current_lang} if in_code_block else {}
                 ))
-                last_index = end_back
+            return zones
 
-        # Catch any trailing text at the end of the file
-        if last_index < len(content):
-            trailing_text = content[last_index:]
-            if trailing_text.strip():
-                zones.append(Zone(
-                    source_file=source_file,
-                    zone_type="prose_section",
-                    content=trailing_text,
-                    start_line=get_line_number(last_index),
-                    end_line=get_line_number(len(content))
-                ))
+        # Standard monolithic fallback rule for pure source code or flat text files
+        default_type = "code_block" if any(
+            file_path.endswith(ext) for ext in [".java", ".py", ".cpp", ".go"]) else "raw_text"
+        fallback_lang = file_path.split(".")[-1] if "." in file_path else "text"
 
-        # Sort zones by order of appearance in the file to preserve chronological context
-        return sorted(zones, key=lambda z: z.start_line)
+        return [
+            Zone(
+                id="zone_1",
+                source_file=file_path,  # Fixed: Added tracking back to source file
+                zone_type=default_type,
+                content=file_content,
+                start_line=1,
+                end_line=len(lines) if lines else 1,
+                metadata={"language": fallback_lang}
+            )
+        ]
