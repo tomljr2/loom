@@ -3,15 +3,29 @@ import uuid
 from typing import List, Dict, Any
 from types import SimpleNamespace
 from core.models import AtomicNode
+from core.relations import StructuralEdgeExtractor
 
 
 class CohesionEngine:
     def __init__(self, similarity_threshold: float = 0.75, max_chunk_lines: int = 50, **kwargs):
+        """
+        Initializes the CohesionEngine.
+
+        :param similarity_threshold: Jaccard similarity cutoff for merging fusable nodes.
+        :param max_chunk_lines: The hard upper limit of lines allowed in a single chunk.
+        :param kwargs: Captures and absorbs extra orchestrator configs (e.g., max_prose_code_gap).
+        """
         self.similarity_threshold = similarity_threshold
         self.max_chunk_lines = max_chunk_lines
+
+        # Node types explicitly permitted to undergo semantic similarity evaluation
         self.fusable_types = {"paragraph", "sentence", "text_segment", "raw_text"}
 
     def fuse_nodes(self, origin_file: str, nodes: List[AtomicNode]) -> List[Any]:
+        """
+        Aggregates sequential atomic nodes into contextually coherent chunks
+        based on line limits, structural types, and semantic similarity.
+        """
         if not nodes:
             return []
 
@@ -30,7 +44,7 @@ class CohesionEngine:
                 current_lines = next_lines
                 continue
 
-            # Rule 2: Evaluate similarity ONLY if adjacent nodes are of matching fusable types
+            # Rule 2: Evaluate similarity ONLY if adjacent nodes are matching fusable types
             if (current_node.node_type == next_node.node_type and
                     current_node.node_type in self.fusable_types):
 
@@ -43,17 +57,23 @@ class CohesionEngine:
                     current_lines += next_lines
                     continue
 
-            # Rule 3: Discrete boundaries trigger an intentional chunk break
+            # Rule 3: Discrete boundaries (mismatched types or non-fusable tokens like log entries)
+            # trigger an intentional chunk break
             chunks.append(self._build_chunk(current_batch, origin_file))
             current_batch = [next_node]
             current_lines = next_lines
 
+        # Flush the remaining buffer
         if current_batch:
             chunks.append(self._build_chunk(current_batch, origin_file))
 
-        return chunks
+        # Run the deterministic structural edge pass to stitch the graph topology together
+        final_graph_chunks = StructuralEdgeExtractor.extract_edges(chunks)
+
+        return final_graph_chunks
 
     def _calculate_jaccard_similarity(self, text1: str, text2: str) -> float:
+        """Calculates token-level Jaccard similarity between two strings."""
         words1 = set(re.findall(r'\w+', text1.lower()))
         words2 = set(re.findall(r'\w+', text2.lower()))
 
@@ -65,20 +85,23 @@ class CohesionEngine:
         return intersection / union
 
     def _build_chunk(self, batch: List[AtomicNode], origin_file: str) -> SimpleNamespace:
+        """Compiles a batch of atomic nodes into a unified SimpleNamespace chunk object."""
         content = "\n".join([n.content for n in batch])
 
+        # Consolidate pre-existing syntax or graph relations across the batch
         relations = []
         for node in batch:
             if hasattr(node, 'relations') and node.relations:
                 relations.extend(node.relations)
 
+        # Resolve the dominant chunk type classification label
         dominant_type = batch[0].node_type
         if dominant_type in self.fusable_types or dominant_type == "header":
             chunk_type = "prose_section"
         else:
             chunk_type = dominant_type
 
-        # FIX: Wrap in SimpleNamespace so json_emitter can use dot notation (chunk.id)
+        # Wrapped in SimpleNamespace to cleanly support dot-notation access (e.g. chunk.id)
         return SimpleNamespace(
             id=str(uuid.uuid4()),
             origin_file=origin_file,
